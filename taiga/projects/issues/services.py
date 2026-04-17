@@ -96,9 +96,7 @@ def update_issues_milestone_in_bulk(bulk_data: list, milestone: object):
 # CSV
 #####################################################
 
-
-def issues_to_csv(project, queryset):
-    csv_data = io.StringIO()
+def _get_issue_csv_fieldnames(project):
     fieldnames = [
         "id",
         "ref",
@@ -128,10 +126,74 @@ def issues_to_csv(project, queryset):
         "due_date",
         "due_date_reason",
     ]
-
     custom_attrs = project.issuecustomattributes.all()
     for custom_attr in custom_attrs:
         fieldnames.append(custom_attr.name)
+
+    return fieldnames, custom_attrs
+
+
+def _issue_to_csv_row(issue):
+    return {
+        "id": issue.id,
+        "ref": issue.ref,
+        "subject": text.sanitize_csv_text_value(issue.subject),
+        "description": text.sanitize_csv_text_value(issue.description),
+        "sprint_id": issue.milestone.id if issue.milestone else None,
+        "sprint": (
+            text.sanitize_csv_text_value(issue.milestone.name)
+            if issue.milestone
+            else None
+        ),
+        "sprint_estimated_start": (
+            issue.milestone.estimated_start if issue.milestone else None
+        ),
+        "sprint_estimated_finish": (
+            issue.milestone.estimated_finish if issue.milestone else None
+        ),
+        "owner": issue.owner.username if issue.owner else None,
+        "owner_full_name": (
+            text.sanitize_csv_text_value(issue.owner.get_full_name())
+            if issue.owner
+            else None
+        ),
+        "assigned_to": issue.assigned_to.username if issue.assigned_to else None,
+        "assigned_to_full_name": (
+            text.sanitize_csv_text_value(issue.assigned_to.get_full_name())
+            if issue.assigned_to
+            else None
+        ),
+        "status": issue.status.name if issue.status else None,
+        "severity": issue.severity.name,
+        "priority": issue.priority.name,
+        "type": issue.type.name,
+        "is_closed": issue.is_closed,
+        "attachments": issue.attachments.count(),
+        "external_reference": issue.external_reference,
+        "tags": ",".join(issue.tags or []),
+        "watchers": issue.watchers,
+        "voters": issue.total_voters,
+        "created_date": issue.created_date,
+        "modified_date": issue.modified_date,
+        "finished_date": issue.finished_date,
+        "due_date": issue.due_date,
+        "due_date_reason": issue.due_date_reason,
+    }
+
+
+def _append_issue_custom_attrs(issue_data, issue, custom_attrs):
+    for custom_attr in custom_attrs:
+        if not hasattr(issue, "custom_attributes_values"):
+            continue
+        value = issue.custom_attributes_values.attributes_values.get(
+            str(custom_attr.id), None
+        )
+        issue_data[custom_attr.name] = text.sanitize_csv_text_value(value)
+
+
+def issues_to_csv(project, queryset):
+    csv_data = io.StringIO()
+    fieldnames, custom_attrs = _get_issue_csv_fieldnames(project)
 
     queryset = queryset.prefetch_related(
         "attachments", "generated_user_stories", "custom_attributes_values"
@@ -143,59 +205,8 @@ def issues_to_csv(project, queryset):
     writer = csv.DictWriter(csv_data, fieldnames=fieldnames)
     writer.writeheader()
     for issue in queryset:
-        issue_data = {
-            "id": issue.id,
-            "ref": issue.ref,
-            "subject": text.sanitize_csv_text_value(issue.subject),
-            "description": text.sanitize_csv_text_value(issue.description),
-            "sprint_id": issue.milestone.id if issue.milestone else None,
-            "sprint": (
-                text.sanitize_csv_text_value(issue.milestone.name)
-                if issue.milestone
-                else None
-            ),
-            "sprint_estimated_start": (
-                issue.milestone.estimated_start if issue.milestone else None
-            ),
-            "sprint_estimated_finish": (
-                issue.milestone.estimated_finish if issue.milestone else None
-            ),
-            "owner": issue.owner.username if issue.owner else None,
-            "owner_full_name": (
-                text.sanitize_csv_text_value(issue.owner.get_full_name())
-                if issue.owner
-                else None
-            ),
-            "assigned_to": issue.assigned_to.username if issue.assigned_to else None,
-            "assigned_to_full_name": (
-                text.sanitize_csv_text_value(issue.assigned_to.get_full_name())
-                if issue.assigned_to
-                else None
-            ),
-            "status": issue.status.name if issue.status else None,
-            "severity": issue.severity.name,
-            "priority": issue.priority.name,
-            "type": issue.type.name,
-            "is_closed": issue.is_closed,
-            "attachments": issue.attachments.count(),
-            "external_reference": issue.external_reference,
-            "tags": ",".join(issue.tags or []),
-            "watchers": issue.watchers,
-            "voters": issue.total_voters,
-            "created_date": issue.created_date,
-            "modified_date": issue.modified_date,
-            "finished_date": issue.finished_date,
-            "due_date": issue.due_date,
-            "due_date_reason": issue.due_date_reason,
-        }
-
-        for custom_attr in custom_attrs:
-            if not hasattr(issue, "custom_attributes_values"):
-                continue
-            value = issue.custom_attributes_values.attributes_values.get(
-                str(custom_attr.id), None
-            )
-            issue_data[custom_attr.name] = text.sanitize_csv_text_value(value)
+        issue_data = _issue_to_csv_row(issue)
+        _append_issue_custom_attrs(issue_data, issue, custom_attrs)
 
         writer.writerow(issue_data)
 
