@@ -219,177 +219,83 @@ def issues_to_csv(project, queryset):
 
 
 def _get_issues_statuses(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
+    return _get_issues_dimension_filter_data(
+        project,
+        queryset,
+        issue_group_field="status_id",
+        dimension_table="projects_issuestatus",
+        dimension_counter_field="status_id",
     )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-        WITH counters AS (
-                SELECT status_id, count(status_id) count
-                  FROM "issues_issue"
-            INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                 WHERE {where}
-              GROUP BY status_id
-        )
-
-                 SELECT "projects_issuestatus"."id",
-                        "projects_issuestatus"."name",
-                        "projects_issuestatus"."color",
-                        "projects_issuestatus"."order",
-                        COALESCE(counters.count, 0)
-                   FROM "projects_issuestatus"
-        LEFT OUTER JOIN counters ON counters.status_id = projects_issuestatus.id
-                  WHERE "projects_issuestatus"."project_id" = %s
-               ORDER BY "projects_issuestatus"."order";
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for id, name, color, order, count in rows:
-        result.append(
-            {
-                "id": id,
-                "name": _(name),
-                "color": color,
-                "order": order,
-                "count": count,
-            }
-        )
-    return sorted(result, key=itemgetter("order"))
 
 
 def _get_issues_types(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
+    return _get_issues_dimension_filter_data(
+        project,
+        queryset,
+        issue_group_field="type_id",
+        dimension_table="projects_issuetype",
+        dimension_counter_field="type_id",
     )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-        WITH counters AS (
-                SELECT type_id, count(type_id) count
-                  FROM "issues_issue"
-            INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                 WHERE {where}
-              GROUP BY type_id
-        )
-
-                 SELECT "projects_issuetype"."id",
-                        "projects_issuetype"."name",
-                        "projects_issuetype"."color",
-                        "projects_issuetype"."order",
-                        COALESCE(counters.count, 0)
-                   FROM "projects_issuetype"
-        LEFT OUTER JOIN counters ON counters.type_id = projects_issuetype.id
-                  WHERE "projects_issuetype"."project_id" = %s
-               ORDER BY "projects_issuetype"."order";
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for id, name, color, order, count in rows:
-        result.append(
-            {
-                "id": id,
-                "name": _(name),
-                "color": color,
-                "order": order,
-                "count": count,
-            }
-        )
-    return sorted(result, key=itemgetter("order"))
 
 
 def _get_issues_priorities(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
+    return _get_issues_dimension_filter_data(
+        project,
+        queryset,
+        issue_group_field="priority_id",
+        dimension_table="projects_priority",
+        dimension_counter_field="priority_id",
     )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-        WITH counters AS (
-                SELECT priority_id, count(priority_id) count
-                  FROM "issues_issue"
-            INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                 WHERE {where}
-              GROUP BY priority_id
-        )
-
-                 SELECT "projects_priority"."id",
-                        "projects_priority"."name",
-                        "projects_priority"."color",
-                        "projects_priority"."order",
-                        COALESCE(counters.count, 0)
-                   FROM "projects_priority"
-        LEFT OUTER JOIN counters ON counters.priority_id = projects_priority.id
-                  WHERE "projects_priority"."project_id" = %s
-               ORDER BY "projects_priority"."order";
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for id, name, color, order, count in rows:
-        result.append(
-            {
-                "id": id,
-                "name": _(name),
-                "color": color,
-                "order": order,
-                "count": count,
-            }
-        )
-    return sorted(result, key=itemgetter("order"))
 
 
 def _get_issues_severities(project, queryset):
+    return _get_issues_dimension_filter_data(
+        project,
+        queryset,
+        issue_group_field="severity_id",
+        dimension_table="projects_severity",
+        dimension_counter_field="severity_id",
+    )
+
+
+def _get_queryset_where_data(queryset):
     compiler = connection.ops.compiler(queryset.query.compiler)(
         queryset.query, connection, None
     )
     queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
     where = queryset_where_tuple[0]
     where_params = queryset_where_tuple[1]
+    return where, where_params
+
+
+def _get_issues_dimension_filter_data(
+    project, queryset, issue_group_field, dimension_table, dimension_counter_field
+):
+    where, where_params = _get_queryset_where_data(queryset)
 
     extra_sql = """
         WITH counters AS (
-                SELECT severity_id, count(severity_id) count
+                SELECT {issue_group_field}, count({issue_group_field}) count
                   FROM "issues_issue"
             INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
                  WHERE {where}
-              GROUP BY severity_id
+              GROUP BY {issue_group_field}
         )
 
-                 SELECT "projects_severity"."id",
-                        "projects_severity"."name",
-                        "projects_severity"."color",
-                        "projects_severity"."order",
+                 SELECT "{dimension_table}"."id",
+                        "{dimension_table}"."name",
+                        "{dimension_table}"."color",
+                        "{dimension_table}"."order",
                         COALESCE(counters.count, 0)
-                   FROM "projects_severity"
-        LEFT OUTER JOIN counters ON counters.severity_id = projects_severity.id
-                  WHERE "projects_severity"."project_id" = %s
-               ORDER BY "projects_severity"."order";
+                   FROM "{dimension_table}"
+        LEFT OUTER JOIN counters ON counters.{dimension_counter_field} = "{dimension_table}"."id"
+                  WHERE "{dimension_table}"."project_id" = %s
+               ORDER BY "{dimension_table}"."order";
     """.format(
-        where=where
+        where=where,
+        issue_group_field=issue_group_field,
+        dimension_table=dimension_table,
+        dimension_counter_field=dimension_counter_field,
     )
 
     with closing(connection.cursor()) as cursor:
