@@ -316,122 +316,56 @@ def _get_issues_dimension_filter_data(
     return sorted(result, key=itemgetter("order"))
 
 
-def _get_issues_assigned_to(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
+class _IssuesFilterQueryExtractor:
+    def __init__(self, project, queryset):
+        self.project = project
+        self.where, self.where_params = _get_queryset_where_data(queryset)
 
-    extra_sql = """
-        WITH counters AS (
-                SELECT assigned_to_id,  count(assigned_to_id) count
-                  FROM "issues_issue"
-            INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                 WHERE {where} AND "issues_issue"."assigned_to_id" IS NOT NULL
-              GROUP BY assigned_to_id
+    def _execute(self, extra_sql, additional_params=None):
+        params = self.where_params + [self.project.id]
+        if additional_params:
+            params += additional_params
+
+        with closing(connection.cursor()) as cursor:
+            cursor.execute(extra_sql, params)
+            return cursor.fetchall()
+
+    def get_assigned_to(self):
+        extra_sql = """
+            WITH counters AS (
+                    SELECT assigned_to_id,  count(assigned_to_id) count
+                      FROM "issues_issue"
+                INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
+                     WHERE {where} AND "issues_issue"."assigned_to_id" IS NOT NULL
+                  GROUP BY assigned_to_id
+            )
+
+                    SELECT  "projects_membership"."user_id" user_id,
+                            "users_user"."full_name",
+                            "users_user"."username",
+                            COALESCE("counters".count, 0) count
+                       FROM projects_membership
+            LEFT OUTER JOIN counters ON ("projects_membership"."user_id" = "counters"."assigned_to_id")
+                 INNER JOIN "users_user" ON ("projects_membership"."user_id" = "users_user"."id")
+                      WHERE "projects_membership"."project_id" = %s AND "projects_membership"."user_id" IS NOT NULL
+
+            -- unassigned issues
+            UNION
+
+                     SELECT NULL user_id, NULL, NULL, count(coalesce(assigned_to_id, -1)) count
+                       FROM "issues_issue"
+                 INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
+                      WHERE {where} AND "issues_issue"."assigned_to_id" IS NULL
+                   GROUP BY assigned_to_id
+        """.format(
+            where=self.where
         )
 
-                SELECT  "projects_membership"."user_id" user_id,
-                        "users_user"."full_name",
-                        "users_user"."username",
-                        COALESCE("counters".count, 0) count
-                   FROM projects_membership
-        LEFT OUTER JOIN counters ON ("projects_membership"."user_id" = "counters"."assigned_to_id")
-             INNER JOIN "users_user" ON ("projects_membership"."user_id" = "users_user"."id")
-                  WHERE "projects_membership"."project_id" = %s AND "projects_membership"."user_id" IS NOT NULL
+        rows = self._execute(extra_sql, additional_params=self.where_params)
 
-        -- unassigned issues
-        UNION
-
-                 SELECT NULL user_id, NULL, NULL, count(coalesce(assigned_to_id, -1)) count
-                   FROM "issues_issue"
-             INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                  WHERE {where} AND "issues_issue"."assigned_to_id" IS NULL
-               GROUP BY assigned_to_id
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id] + where_params)
-        rows = cursor.fetchall()
-
-    result = []
-    none_valued_added = False
-    for id, full_name, username, count in rows:
-        result.append(
-            {
-                "id": id,
-                "full_name": full_name or username or "",
-                "count": count,
-            }
-        )
-
-        if id is None:
-            none_valued_added = True
-
-    # If there was no issue with null assigned_to we manually add it
-    if not none_valued_added:
-        result.append(
-            {
-                "id": None,
-                "full_name": "",
-                "count": 0,
-            }
-        )
-
-    return sorted(result, key=itemgetter("full_name"))
-
-
-def _get_issues_owners(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-        WITH counters AS (
-                SELECT "issues_issue"."owner_id" owner_id,  count("issues_issue"."owner_id") count
-                  FROM "issues_issue"
-            INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
-                 WHERE {where}
-              GROUP BY "issues_issue"."owner_id"
-        )
-
-                 SELECT "projects_membership"."user_id" id,
-                        "users_user"."full_name",
-                        "users_user"."username",
-                        COALESCE("counters".count, 0) count
-                   FROM projects_membership
-        LEFT OUTER JOIN counters ON ("projects_membership"."user_id" = "counters"."owner_id")
-             INNER JOIN "users_user" ON ("projects_membership"."user_id" = "users_user"."id")
-                  WHERE "projects_membership"."project_id" = %s AND "projects_membership"."user_id" IS NOT NULL
-
-        -- System users
-        UNION
-
-                 SELECT "users_user"."id" user_id,
-                        "users_user"."full_name" full_name,
-                        "users_user"."username",
-                        COALESCE("counters".count, 0) count
-                   FROM users_user
-        LEFT OUTER JOIN counters ON ("users_user"."id" = "counters"."owner_id")
-                  WHERE ("users_user"."is_system" IS TRUE)
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for id, full_name, username, count in rows:
-        if count > 0:
+        result = []
+        none_valued_added = False
+        for id, full_name, username, count in rows:
             result.append(
                 {
                     "id": id,
@@ -439,116 +373,172 @@ def _get_issues_owners(project, queryset):
                     "count": count,
                 }
             )
-    return sorted(result, key=itemgetter("full_name"))
+
+            if id is None:
+                none_valued_added = True
+
+        if not none_valued_added:
+            result.append(
+                {
+                    "id": None,
+                    "full_name": "",
+                    "count": 0,
+                }
+            )
+
+        return sorted(result, key=itemgetter("full_name"))
+
+    def get_owners(self):
+        extra_sql = """
+            WITH counters AS (
+                    SELECT "issues_issue"."owner_id" owner_id,  count("issues_issue"."owner_id") count
+                      FROM "issues_issue"
+                INNER JOIN "projects_project" ON ("issues_issue"."project_id" = "projects_project"."id")
+                     WHERE {where}
+                  GROUP BY "issues_issue"."owner_id"
+            )
+
+                     SELECT "projects_membership"."user_id" id,
+                            "users_user"."full_name",
+                            "users_user"."username",
+                            COALESCE("counters".count, 0) count
+                       FROM projects_membership
+            LEFT OUTER JOIN counters ON ("projects_membership"."user_id" = "counters"."owner_id")
+                 INNER JOIN "users_user" ON ("projects_membership"."user_id" = "users_user"."id")
+                      WHERE "projects_membership"."project_id" = %s AND "projects_membership"."user_id" IS NOT NULL
+
+            -- System users
+            UNION
+
+                     SELECT "users_user"."id" user_id,
+                            "users_user"."full_name" full_name,
+                            "users_user"."username",
+                            COALESCE("counters".count, 0) count
+                       FROM users_user
+            LEFT OUTER JOIN counters ON ("users_user"."id" = "counters"."owner_id")
+                      WHERE ("users_user"."is_system" IS TRUE)
+        """.format(
+            where=self.where
+        )
+
+        rows = self._execute(extra_sql)
+
+        result = []
+        for id, full_name, username, count in rows:
+            if count > 0:
+                result.append(
+                    {
+                        "id": id,
+                        "full_name": full_name or username or "",
+                        "count": count,
+                    }
+                )
+        return sorted(result, key=itemgetter("full_name"))
+
+    def get_roles(self):
+        extra_sql = """
+         WITH "issue_counters" AS (
+             SELECT DISTINCT "issues_issue"."status_id" "status_id",
+                             "issues_issue"."id" "issue_id",
+                             "projects_membership"."role_id" "role_id"
+                        FROM "issues_issue"
+                  INNER JOIN "projects_project"
+                          ON ("issues_issue"."project_id" = "projects_project"."id")
+             LEFT OUTER JOIN "projects_membership"
+                          ON "projects_membership"."user_id" = "issues_issue"."assigned_to_id"
+                       WHERE {where}
+                ),
+                 "counters" AS (
+                      SELECT "role_id" as "role_id",
+                             COUNT("role_id") "count"
+                        FROM "issue_counters"
+                    GROUP BY "role_id"
+                )
+
+                     SELECT "users_role"."id",
+                            "users_role"."name",
+                            "users_role"."order",
+                            COALESCE("counters"."count", 0)
+                       FROM "users_role"
+            LEFT OUTER JOIN "counters"
+                         ON "counters"."role_id" = "users_role"."id"
+                      WHERE "users_role"."project_id" = %s
+                   ORDER BY "users_role"."order";
+        """.format(
+            where=self.where
+        )
+
+        rows = self._execute(extra_sql)
+
+        result = []
+        for id, name, order, count in rows:
+            result.append(
+                {
+                    "id": id,
+                    "name": _(name),
+                    "color": None,
+                    "order": order,
+                    "count": count,
+                }
+            )
+        return sorted(result, key=itemgetter("order"))
+
+    def get_tags(self):
+        extra_sql = """
+            WITH "issues_tags" AS (
+                        SELECT "tag",
+                               COUNT("tag") "counter"
+                          FROM (
+                                    SELECT UNNEST("issues_issue"."tags") "tag"
+                                      FROM "issues_issue"
+                                INNER JOIN "projects_project"
+                                        ON ("issues_issue"."project_id" = "projects_project"."id")
+                                     WHERE {where}
+                               ) "tags"
+                      GROUP BY "tag"),
+                 "project_tags" AS (
+                        SELECT reduce_dim("tags_colors") "tag_color"
+                          FROM "projects_project"
+                         WHERE "id"=%s)
+
+          SELECT "tag_color"[1] "tag",
+                 "tag_color"[2] "color",
+                 COALESCE("issues_tags"."counter", 0) "counter"
+            FROM project_tags
+       LEFT JOIN "issues_tags" ON "project_tags"."tag_color"[1] = "issues_tags"."tag"
+        ORDER BY "tag"
+        """.format(
+            where=self.where
+        )
+
+        rows = self._execute(extra_sql)
+
+        result = []
+        for name, color, count in rows:
+            result.append(
+                {
+                    "name": name,
+                    "color": color,
+                    "count": count,
+                }
+            )
+        return sorted(result, key=itemgetter("name"))
+
+
+def _get_issues_assigned_to(project, queryset):
+    return _IssuesFilterQueryExtractor(project, queryset).get_assigned_to()
+
+
+def _get_issues_owners(project, queryset):
+    return _IssuesFilterQueryExtractor(project, queryset).get_owners()
 
 
 def _get_issues_roles(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-     WITH "issue_counters" AS (
-         SELECT DISTINCT "issues_issue"."status_id" "status_id",
-                         "issues_issue"."id" "issue_id",
-                         "projects_membership"."role_id" "role_id"
-                    FROM "issues_issue"
-              INNER JOIN "projects_project"
-                      ON ("issues_issue"."project_id" = "projects_project"."id")
-         LEFT OUTER JOIN "projects_membership"
-                      ON "projects_membership"."user_id" = "issues_issue"."assigned_to_id"
-                   WHERE {where}
-            ),
-             "counters" AS (
-                  SELECT "role_id" as "role_id",
-                         COUNT("role_id") "count"
-                    FROM "issue_counters"
-                GROUP BY "role_id"
-            )
-
-                 SELECT "users_role"."id",
-                        "users_role"."name",
-                        "users_role"."order",
-                        COALESCE("counters"."count", 0)
-                   FROM "users_role"
-        LEFT OUTER JOIN "counters"
-                     ON "counters"."role_id" = "users_role"."id"
-                  WHERE "users_role"."project_id" = %s
-               ORDER BY "users_role"."order";
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for id, name, order, count in rows:
-        result.append(
-            {
-                "id": id,
-                "name": _(name),
-                "color": None,
-                "order": order,
-                "count": count,
-            }
-        )
-    return sorted(result, key=itemgetter("order"))
+    return _IssuesFilterQueryExtractor(project, queryset).get_roles()
 
 
 def _get_issues_tags(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
-    extra_sql = """
-        WITH "issues_tags" AS (
-                    SELECT "tag",
-                           COUNT("tag") "counter"
-                      FROM (
-                                SELECT UNNEST("issues_issue"."tags") "tag"
-                                  FROM "issues_issue"
-                            INNER JOIN "projects_project"
-                                    ON ("issues_issue"."project_id" = "projects_project"."id")
-                                 WHERE {where}
-                           ) "tags"
-                  GROUP BY "tag"),
-             "project_tags" AS (
-                    SELECT reduce_dim("tags_colors") "tag_color"
-                      FROM "projects_project"
-                     WHERE "id"=%s)
-
-      SELECT "tag_color"[1] "tag",
-             "tag_color"[2] "color",
-             COALESCE("issues_tags"."counter", 0) "counter"
-        FROM project_tags
-   LEFT JOIN "issues_tags" ON "project_tags"."tag_color"[1] = "issues_tags"."tag"
-    ORDER BY "tag"
-    """.format(
-        where=where
-    )
-
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
-
-    result = []
-    for name, color, count in rows:
-        result.append(
-            {
-                "name": name,
-                "color": color,
-                "count": count,
-            }
-        )
-    return sorted(result, key=itemgetter("name"))
+    return _IssuesFilterQueryExtractor(project, queryset).get_tags()
 
 
 def get_issues_filters_data(project, querysets):
