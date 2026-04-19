@@ -715,14 +715,25 @@ def userstories_to_csv(project, queryset):
 # Api filter data
 #####################################################
 
-def _get_userstories_statuses(project, queryset):
+# Returns the SQL WHERE clause and parameters for a given queryset
+def _get_queryset_where_data(queryset):
     compiler = connection.ops.compiler(queryset.query.compiler)(
         queryset.query, connection, None
     )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
+    where, where_params = queryset.query.where.as_sql(compiler, connection)
+    return where, where_params
 
+# Executes a raw SQL query for userstories filtering using the given SQL template and a function to build parameters
+def _execute_userstories_filter_query(queryset, sql_template, params_builder):
+    where, where_params = _get_queryset_where_data(queryset)
+    sql = sql_template.format(where=where)
+    sql_params = params_builder(where_params)
+
+    with closing(connection.cursor()) as cursor:
+        cursor.execute(sql, sql_params)
+        return cursor.fetchall()
+
+def _get_userstories_statuses(project, queryset):
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."status_id" "status_id",
@@ -753,13 +764,13 @@ def _get_userstories_statuses(project, queryset):
                      ON "counters"."status_id" = "projects_userstorystatus"."id"
                   WHERE "projects_userstorystatus"."project_id" = %s
                ORDER BY "projects_userstorystatus"."order";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, name, color, order, count in rows:
@@ -776,13 +787,6 @@ def _get_userstories_statuses(project, queryset):
 
 
 def _get_userstories_assigned_to(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."assigned_to_id" "assigned_to_id",
@@ -835,13 +839,13 @@ def _get_userstories_assigned_to(project, queryset):
                       ON "userstories_userstory"."id" = "userstories_userstory_assigned_users"."userstory_id"
                   WHERE {where} AND "userstories_userstory"."assigned_to_id" IS NULL
                GROUP BY "assigned_to_id"
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id] + where_params)
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id] + where_params,
+    )
 
     result = []
     none_valued_added = False
@@ -871,13 +875,6 @@ def _get_userstories_assigned_to(project, queryset):
 
 
 def _get_userstories_assigned_users(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT COALESCE("userstories_userstory_assigned_users"."user_id",
@@ -937,13 +934,13 @@ def _get_userstories_assigned_users(project, queryset):
                       WHERE "userstories_userstory_assigned_users"."userstory_id" = "userstories_userstory"."id"
                   ) AND "userstories_userstory"."assigned_to_id" IS NULL
                GROUP BY "username";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id] + where_params)
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id] + where_params,
+    )
 
     result = []
     none_valued_added = False
@@ -979,13 +976,6 @@ def _get_userstories_assigned_users(project, queryset):
 
 
 def _get_userstories_owners(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS(
          SELECT DISTINCT "userstories_userstory"."owner_id" "owner_id",
@@ -1035,13 +1025,13 @@ def _get_userstories_owners(project, queryset):
         LEFT OUTER JOIN "counters"
                      ON ("users_user"."id" = "counters"."owner_id")
                   WHERE ("users_user"."is_system" IS TRUE)
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, full_name, username, count, photo, email in rows:
@@ -1060,13 +1050,6 @@ def _get_userstories_owners(project, queryset):
 
 
 def _get_userstories_tags(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
            WITH "userstories_tags" AS (
                    SELECT "tag",
@@ -1099,13 +1082,13 @@ def _get_userstories_tags(project, queryset):
 LEFT OUTER JOIN "userstories_tags"
              ON "project_tags"."tag_color"[1] = "userstories_tags"."tag"
        ORDER BY "tag"
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for name, color, count in rows:
@@ -1120,12 +1103,6 @@ LEFT OUTER JOIN "userstories_tags"
 
 
 def _get_userstories_epics(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
     extra_sql = """
        WITH "counters" AS (
                SELECT "epics_relateduserstory"."epic_id" AS "epic_id",
@@ -1172,13 +1149,13 @@ def _get_userstories_epics(project, queryset):
       LEFT OUTER JOIN "counters"
                    ON ("counters"."epic_id" = "epics_epic"."id")
                 WHERE "epics_epic"."project_id" = %s
-        """.format(
-        where=where
-    )
+        """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + where_params + [project.id],
+    )
 
     result = []
     for id, ref, subject, order, count in rows:
@@ -1210,13 +1187,6 @@ def _get_userstories_epics(project, queryset):
 
 
 def _get_userstories_roles(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."status_id" "status_id",
@@ -1252,13 +1222,13 @@ def _get_userstories_roles(project, queryset):
                      ON "counters"."role_id" = "users_role"."id"
                   WHERE "users_role"."project_id" = %s
                ORDER BY "users_role"."order";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, name, order, count in rows:
