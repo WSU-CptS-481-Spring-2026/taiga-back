@@ -1260,7 +1260,8 @@ class HyperlinkedModelSerializer(ModelSerializer):
         return self._default_view_name % format_kwargs
 
 
-class LightSerializer(serpy.Serializer):
+# Shared __init__ logic for Light serializers, extracted to eliminate duplication.
+class _LightSerializerMixin:
     def __init__(self, *args, **kwargs):
         kwargs.pop("read_only", None)
         kwargs.pop("partial", None)
@@ -1272,13 +1273,9 @@ class LightSerializer(serpy.Serializer):
         self.view = view
 
 
-class LightDictSerializer(serpy.DictSerializer):
-    def __init__(self, *args, **kwargs):
-        kwargs.pop("read_only", None)
-        kwargs.pop("partial", None)
-        kwargs.pop("files", None)
-        context = kwargs.pop("context", {})
-        view = kwargs.pop("view", {})
-        super().__init__(*args, **kwargs)
-        self.context = context
-        self.view = view
+class LightSerializer(_LightSerializerMixin, serpy.Serializer):
+    pass
+
+
+class LightDictSerializer(_LightSerializerMixin, serpy.DictSerializer):
+    pass
