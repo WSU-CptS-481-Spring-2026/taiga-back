@@ -730,123 +730,110 @@ class ModelSerializer((six.with_metaclass(SerializerMetaclass, BaseSerializer)))
         models.ImageField: ImageField,
     }
 
-    def get_default_fields(self):
-        """
-        Return all the fields that should be serialized for the model.
-        """
-
+    # Get model metadata from serializer options and fail fast if model is missing.
+    def _get_model_options(self):
         cls = self.opts.model
         assert cls is not None, \
                 "Serializer class '%s' is missing `model` Meta option" % self.__class__.__name__
-        opts = cls._meta.concrete_model._meta
-        ret = OrderedDict()
-        nested = bool(self.opts.depth)
+        return cls._meta.concrete_model._meta
 
-        # Deal with adding the primary key field
+    # Resolve the effective PK field, including parent PK for multi-table inheritance.
+    def _get_primary_key_field(self, opts):
         pk_field = opts.pk
         while pk_field.remote_field and pk_field.remote_field.parent_link:
             # If model is a child via multitable inheritance, use parent's pk
             pk_field = pk_field.remote_field.model._meta.pk
+        return pk_field
 
-        field = self.get_pk_field(pk_field)
-        if field:
-            ret[pk_field.name] = field
-
-        # Deal with forward relationships
+    # Collect serializable forward relation fields (FK/M2M and normal model fields).
+    def _get_forward_relations(self, opts):
         forward_rels = [field for field in opts.fields if field.serialize]
         forward_rels += [field for field in opts.many_to_many if field.serialize]
+        return forward_rels
 
-        for model_field in forward_rels:
-            has_through_model = False
+    # Build one forward relation field and report if it uses a custom through model.
+    def _get_forward_relation_field(self, model_field, nested):
+        has_through_model = False
+        to_many = None
+        related_model = None
 
-            if model_field.remote_field:
-                to_many = isinstance(model_field,
-                                     models.fields.related.ManyToManyField)
-                related_model = _resolve_model(model_field.remote_field.model)
+        if model_field.remote_field:
+            to_many = isinstance(model_field, models.fields.related.ManyToManyField)
+            related_model = _resolve_model(model_field.remote_field.model)
 
-                if to_many and not model_field.remote_field.through._meta.auto_created:
-                    has_through_model = True
-
-            if model_field.remote_field and nested:
-                if len(inspect.getfullargspec(self.get_nested_field).args) == 2:
-                    warnings.warn(
-                        "The `get_nested_field(model_field)` call signature "
-                        "is due to be deprecated. "
-                        "Use `get_nested_field(model_field, related_model, "
-                        "to_many) instead",
-                        PendingDeprecationWarning
-                    )
-                    field = self.get_nested_field(model_field)
-                else:
-                    field = self.get_nested_field(model_field, related_model, to_many)
-            elif model_field.remote_field:
-                if len(inspect.getfullargspec(self.get_nested_field).args) == 3:
-                    warnings.warn(
-                        "The `get_related_field(model_field, to_many)` call "
-                        "signature is due to be deprecated. "
-                        "Use `get_related_field(model_field, related_model, "
-                        "to_many) instead",
-                        PendingDeprecationWarning
-                    )
-                    field = self.get_related_field(model_field, to_many=to_many)
-                else:
-                    field = self.get_related_field(model_field, related_model, to_many)
-            else:
-                field = self.get_field(model_field)
-
-            if field:
-                if has_through_model:
-                    field.read_only = True
-
-                ret[model_field.name] = field
-
-        # Deal with reverse relationships
-        if not self.opts.fields:
-            reverse_rels = []
-        else:
-            # Reverse relationships are only included if they are explicitly
-            # present in the `fields` option on the serializer
-
-            # NOTE: Rewrite after Django 1.10 upgrade.
-            #       See https://docs.djangoproject.com/es/1.10/ref/models/meta/#migrating-from-the-old-api
-            reverse_rels = [
-                f for f in opts.get_fields()
-                if (f.one_to_many or f.one_to_one)
-                and f.auto_created and not f.concrete
-            ]
-            reverse_rels += [
-                f for f in opts.get_fields(include_hidden=True)
-                if f.many_to_many and f.auto_created
-            ]
-
-        for relation in reverse_rels:
-            accessor_name = relation.get_accessor_name()
-            if not self.opts.fields or accessor_name not in self.opts.fields:
-                continue
-            related_model = relation.model
-            to_many = relation.field.remote_field.multiple
-            has_through_model = False
-            is_m2m = isinstance(relation.field,
-                                models.fields.related.ManyToManyField)
-
-            if (is_m2m and
-                hasattr(relation.field.remote_field, "through") and
-                not relation.field.remote_field.through._meta.auto_created):
+            if to_many and not model_field.remote_field.through._meta.auto_created:
                 has_through_model = True
 
-            if nested:
-                field = self.get_nested_field(None, related_model, to_many)
+        if model_field.remote_field and nested:
+            if len(inspect.getfullargspec(self.get_nested_field).args) == 2:
+                warnings.warn(
+                    "The `get_nested_field(model_field)` call signature "
+                    "is due to be deprecated. "
+                    "Use `get_nested_field(model_field, related_model, "
+                    "to_many) instead",
+                    PendingDeprecationWarning
+                )
+                field = self.get_nested_field(model_field)
             else:
-                field = self.get_related_field(None, related_model, to_many)
+                field = self.get_nested_field(model_field, related_model, to_many)
+        elif model_field.remote_field:
+            if len(inspect.getfullargspec(self.get_nested_field).args) == 3:
+                warnings.warn(
+                    "The `get_related_field(model_field, to_many)` call "
+                    "signature is due to be deprecated. "
+                    "Use `get_related_field(model_field, related_model, "
+                    "to_many) instead",
+                    PendingDeprecationWarning
+                )
+                field = self.get_related_field(model_field, to_many=to_many)
+            else:
+                field = self.get_related_field(model_field, related_model, to_many)
+        else:
+            field = self.get_field(model_field)
 
-            if field:
-                if has_through_model:
-                    field.read_only = True
+        return field, has_through_model
 
-                ret[accessor_name] = field
+    # Collect reverse relations that are explicitly requested by serializer fields.
+    def _get_reverse_relations(self, opts):
+        if not self.opts.fields:
+            return []
 
-        # Add the `read_only` flag to any fields that have been specified
-        # in the `read_only_fields` option
+        # Reverse relationships are only included if they are explicitly
+        # present in the `fields` option on the serializer
+        # NOTE: Rewrite after Django 1.10 upgrade.
+        #       See https://docs.djangoproject.com/es/1.10/ref/models/meta/#migrating-from-the-old-api
+        reverse_rels = [
+            f for f in opts.get_fields()
+            if (f.one_to_many or f.one_to_one)
+            and f.auto_created and not f.concrete
+        ]
+        reverse_rels += [
+            f for f in opts.get_fields(include_hidden=True)
+            if f.many_to_many and f.auto_created
+        ]
+        return reverse_rels
+
+    # Build one reverse relation field and report if it uses a custom through model.
+    def _get_reverse_relation_field(self, relation, nested):
+        related_model = relation.model
+        to_many = relation.field.remote_field.multiple
+        has_through_model = False
+        is_m2m = isinstance(relation.field, models.fields.related.ManyToManyField)
+
+        if (is_m2m and
+            hasattr(relation.field.remote_field, "through") and
+            not relation.field.remote_field.through._meta.auto_created):
+            has_through_model = True
+
+        if nested:
+            field = self.get_nested_field(None, related_model, to_many)
+        else:
+            field = self.get_related_field(None, related_model, to_many)
+
+        return field, has_through_model
+
+    # Apply read_only, write_only, and i18n flags configured in serializer Meta.
+    def _apply_read_write_i18n_flags(self, ret):
         for field_name in self.opts.read_only_fields:
             assert field_name not in self.base_fields.keys(), (
                 "field '%s' on serializer '%s' specified in "
@@ -876,6 +863,38 @@ class ModelSerializer((six.with_metaclass(SerializerMetaclass, BaseSerializer)))
         for field_name in self.opts.i18n_fields:
             ret[field_name].i18n = True
 
+    # Orchestrate default field construction using small focused helper methods.
+    def get_default_fields(self):
+        """
+        Return all the fields that should be serialized for the model.
+        """
+        opts = self._get_model_options()
+        ret = OrderedDict()
+        nested = bool(self.opts.depth)
+
+        pk_field = self._get_primary_key_field(opts)
+        field = self.get_pk_field(pk_field)
+        if field:
+            ret[pk_field.name] = field
+
+        for model_field in self._get_forward_relations(opts):
+            field, has_through_model = self._get_forward_relation_field(model_field, nested)
+            if field:
+                if has_through_model:
+                    field.read_only = True
+                ret[model_field.name] = field
+
+        for relation in self._get_reverse_relations(opts):
+            accessor_name = relation.get_accessor_name()
+            if not self.opts.fields or accessor_name not in self.opts.fields:
+                continue
+            field, has_through_model = self._get_reverse_relation_field(relation, nested)
+            if field:
+                if has_through_model:
+                    field.read_only = True
+                ret[accessor_name] = field
+
+        self._apply_read_write_i18n_flags(ret)
         return ret
 
     def get_pk_field(self, model_field):
