@@ -42,6 +42,10 @@ except ImportError:
     utc = timezone.utc
 
 
+def _format_lazy(s, *args, **kwargs):
+    return s.format(*args, **kwargs)
+
+
 def make_utc(dt):
     if settings.USE_TZ and is_naive(dt):
         return make_aware(dt, timezone=utc)
@@ -61,8 +65,4 @@ def datetime_from_epoch(ts):
     return make_utc(datetime.utcfromtimestamp(ts))
 
 
-def format_lazy(s, *args, **kwargs):
-    return s.format(*args, **kwargs)
-
-
-format_lazy = lazy(format_lazy, str)
+format_lazy = lazy(_format_lazy, str)

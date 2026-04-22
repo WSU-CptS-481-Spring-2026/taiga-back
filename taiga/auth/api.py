@@ -5,8 +5,6 @@
 #
 # Copyright (c) 2021-present Kaleidos INC
 
-from functools import partial
-
 from django.utils.translation import gettext as _
 from django.conf import settings
 
@@ -19,10 +17,10 @@ from taiga.projects.services.invitations import accept_invitation_by_existing_us
 from . import serializers
 from .authentication import AUTH_HEADER_TYPES
 from .permissions import AuthPermission
-from .services import private_register_for_new_user
-from .services import public_register
-from .services import make_auth_response_data
-from .services import get_auth_plugins
+from .services_register import private_register_for_new_user
+from .services_register import public_register_for_new_user
+from .services_auth import make_auth_response_data
+from .services_auth import get_auth_plugins
 from .throttling import LoginFailRateThrottle, RegisterSuccessRateThrottle
 
 
@@ -41,13 +39,20 @@ def _validate_data(data:dict, *, cls):
         raise exc.RequestValidationError(validator.errors)
     return validator.object
 
+def get_token(data: dict) -> dict:
+    return _validate_data(data, cls=serializers.TokenObtainPairSerializer)
 
-get_token = partial(_validate_data, cls=serializers.TokenObtainPairSerializer)
-refresh_token = partial(_validate_data, cls=serializers.TokenRefreshSerializer)
-verify_token = partial(_validate_data, cls=serializers.TokenVerifySerializer)
-parse_public_register_data = partial(_validate_data, cls=serializers.PublicRegisterSerializer)
-parse_private_register_data = partial(_validate_data, cls=serializers.PrivateRegisterSerializer)
+def refresh_token(data: dict) -> dict:
+    return _validate_data(data, cls=serializers.TokenRefreshSerializer)
 
+def verify_token(data: dict) -> dict:
+    return _validate_data(data, cls=serializers.TokenVerifySerializer)
+
+def parse_public_register_data(data: dict) -> dict:
+    return _validate_data(data, cls=serializers.PublicRegisterSerializer)
+
+def parse_private_register_data(data: dict) -> dict:
+    return _validate_data(data, cls=serializers.PrivateRegisterSerializer)
 
 class AuthViewSet(viewsets.ViewSet):
     permission_classes = (AuthPermission,)
@@ -109,7 +114,7 @@ class AuthViewSet(viewsets.ViewSet):
 
         try:
             data = parse_public_register_data(request.DATA)
-            user = public_register(**data)
+            user = public_register_for_new_user(**data)
         except exc.IntegrityError as e:
             raise exc.BadRequest(e.detail)
 

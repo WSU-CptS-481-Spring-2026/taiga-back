@@ -36,7 +36,7 @@ from importlib import reload
 
 from taiga.auth import authentication
 from taiga.auth.exceptions import (
-    AuthenticationFailed, InvalidToken,
+    TokenAuthenticationFailed, InvalidToken,
 )
 from taiga.auth.models import TokenUser
 from taiga.auth.settings import api_settings
@@ -45,6 +45,8 @@ from taiga.auth.tokens import AccessToken, CancelToken
 from tests import factories as f
 
 from .utils import override_api_settings, APIRequestFactory
+
+from unittest.mock import patch
 
 
 ###################################
@@ -71,7 +73,7 @@ def test_jwt_authentication_get_header(backend = authentication.JWTAuthenticatio
     assert backend.get_header(request) == fake_header
 
     # Should work with the x_access_token
-    with override_api_settings(AUTH_HEADER_NAME='HTTP_X_ACCESS_TOKEN'):
+    with patch.object(api_settings, 'AUTH_HEADER_NAME', 'HTTP_X_ACCESS_TOKEN'):
         # Should pull correct header off request when using X_ACCESS_TOKEN
         request = factory.get('/test-url/', HTTP_X_ACCESS_TOKEN=fake_header)
         assert backend.get_header(request) == fake_header
@@ -83,7 +85,7 @@ def test_jwt_authentication_get_header(backend = authentication.JWTAuthenticatio
 
 def test_jwt_authentication_get_raw_token(backend = authentication.JWTAuthentication()):
     # Should return None if header lacks correct type keyword
-    with override_api_settings(AUTH_HEADER_TYPES='JWT'):
+    with patch.object(api_settings, 'AUTH_HEADER_TYPES', 'JWT'):
         reload(authentication)
         assert backend.get_raw_token(fake_header) is None
     reload(authentication)
@@ -92,17 +94,17 @@ def test_jwt_authentication_get_raw_token(backend = authentication.JWTAuthentica
     assert backend.get_raw_token(b'') is None
 
     # Should raise error if header is malformed
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(TokenAuthenticationFailed):
         backend.get_raw_token(b'Bearer one two')
 
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(TokenAuthenticationFailed):
         backend.get_raw_token(b'Bearer')
 
     # Otherwise, should return unvalidated token in header
     assert backend.get_raw_token(fake_header) ==  fake_token
 
     # Should return token if header has one of many valid token types
-    with override_api_settings(AUTH_HEADER_TYPES=('JWT', 'Bearer')):
+    with patch.object(api_settings, 'AUTH_HEADER_TYPES', ('JWT', 'Bearer')):
         reload(authentication)
         assert backend.get_raw_token(fake_header) == fake_token
 
@@ -123,9 +125,7 @@ def test_jwt_authentication_get_validated_token(backend = authentication.JWTAuth
 
     # Should not accept tokens not included in AUTH_TOKEN_CLASSES
     cancel_token = CancelToken()
-    with override_api_settings(AUTH_TOKEN_CLASSES=(
-        'taiga.auth.tokens.AccessToken',
-    )):
+    with patch.object(api_settings, 'AUTH_TOKEN_CLASSES', (AccessToken,)):
         with pytest.raises(InvalidToken) as e:
             backend.get_validated_token(str(cancel_token))
 
@@ -140,9 +140,9 @@ def test_jwt_authentication_get_validated_token(backend = authentication.JWTAuth
     # Should accept tokens included in AUTH_TOKEN_CLASSES
     access_token = AccessToken()
     cancel_token = CancelToken()
-    with override_api_settings(AUTH_TOKEN_CLASSES=(
-        'taiga.auth.tokens.AccessToken',
-        'taiga.auth.tokens.CancelToken',
+    with patch.object(api_settings, 'AUTH_TOKEN_CLASSES', (
+        AccessToken,
+        CancelToken,
     )):
         backend.get_validated_token(str(access_token))
         backend.get_validated_token(str(cancel_token))
@@ -159,7 +159,7 @@ def test_jwt_authentication_get_user(backend = authentication.JWTAuthentication(
     payload[api_settings.USER_ID_CLAIM] = 42
 
     # Should raise exception if user not found
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(TokenAuthenticationFailed):
         backend.get_user(payload)
 
     u = f.UserFactory(username='markhamill')
@@ -169,7 +169,7 @@ def test_jwt_authentication_get_user(backend = authentication.JWTAuthentication(
     payload[api_settings.USER_ID_CLAIM] = getattr(u, api_settings.USER_ID_FIELD)
 
     # Should raise exception if user is inactive
-    with pytest.raises(AuthenticationFailed):
+    with pytest.raises(TokenAuthenticationFailed):
         backend.get_user(payload)
 
     u.is_active = True
