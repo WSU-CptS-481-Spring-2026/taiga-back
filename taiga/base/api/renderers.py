@@ -41,10 +41,11 @@ REST framework also provides an HTML renderer the renders the browsable API.
 """
 
 from django.core.exceptions import ImproperlyConfigured
-from django.http.multipartparser import parse_header
 from django.template import RequestContext, loader, Template
 from django.test.client import encode_multipart
 import six
+
+from .utils.compat import parse_header
 
 from .utils import encoders
 

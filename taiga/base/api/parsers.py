@@ -41,12 +41,13 @@ from django.conf import settings
 from django.core.files.uploadhandler import StopFutureHandlers
 from django.http import QueryDict
 from django.http.multipartparser import MultiPartParser as DjangoMultiPartParser
-from django.http.multipartparser import MultiPartParserError, parse_header, ChunkIter
+from django.http.multipartparser import MultiPartParserError, ChunkIter
 
 import six
 
 from taiga.base.exceptions import ParseError
 from taiga.base.api import renderers
+from taiga.base.api.utils.compat import parse_header
 
 import json
 import datetime

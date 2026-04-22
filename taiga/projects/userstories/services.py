@@ -144,7 +144,6 @@ def reset_userstories_kanban_order_in_bulk(
         ids=bulk_userstories, content_type="userstories.userstory", projectid=project.id
     )
 
-
 def update_userstories_backlog_or_sprint_order_in_bulk(
     user: User,
     project: Project,
@@ -528,8 +527,8 @@ def _recalculate_is_closed_for_milestone(milestone):
 #####################################################
 
 
-def userstories_to_csv(project, queryset):
-    csv_data = io.StringIO()
+# Returns ordered CSV column names plus role-point and custom-attribute columns for a user story export.
+def _get_userstory_csv_fieldnames(project):
     fieldnames = [
         "id",
         "ref",
@@ -583,6 +582,91 @@ def userstories_to_csv(project, queryset):
     for custom_attr in custom_attrs:
         fieldnames.append(custom_attr.name)
 
+    return fieldnames, roles, custom_attrs
+    
+
+
+# Maps a single UserStory instance to a flat dict of base CSV column values.
+def _userstory_to_csv_row(us):
+    return {
+        "id": us.id,
+        "ref": us.ref,
+        "subject": text.sanitize_csv_text_value(us.subject),
+        "description": text.sanitize_csv_text_value(us.description),
+        "sprint_id": us.milestone.id if us.milestone else None,
+        "sprint": (
+            text.sanitize_csv_text_value(us.milestone.name) if us.milestone else None
+        ),
+        "sprint_estimated_start": us.milestone.estimated_start if us.milestone else None,
+        "sprint_estimated_finish": us.milestone.estimated_finish
+        if us.milestone
+        else None,
+        "owner": us.owner.username if us.owner else None,
+        "owner_full_name": (
+            text.sanitize_csv_text_value(us.owner.get_full_name()) if us.owner else None
+        ),
+        "assigned_to": us.assigned_to.username if us.assigned_to else None,
+        "assigned_to_full_name": (
+            text.sanitize_csv_text_value(us.assigned_to.get_full_name())
+            if us.assigned_to
+            else None
+        ),
+        "assigned_users": ",".join(
+            [assigned_user.username for assigned_user in us.assigned_users.all()]
+        ),
+        "assigned_users_full_name": text.sanitize_csv_text_value(
+            ",".join(
+                [
+                    assigned_user.get_full_name()
+                    for assigned_user in us.assigned_users.all()
+                ]
+            )
+        ),
+        "status": us.status.name if us.status else None,
+        "is_closed": us.is_closed,
+        "swimlane": us.swimlane.name if us.swimlane else None,
+        "backlog_order": us.backlog_order,
+        "sprint_order": us.sprint_order,
+        "kanban_order": us.kanban_order,
+        "created_date": us.created_date,
+        "modified_date": us.modified_date,
+        "finish_date": us.finish_date,
+        "client_requirement": us.client_requirement,
+        "team_requirement": us.team_requirement,
+        "attachments": us.attachments.count(),
+        "generated_from_issue": (
+            us.generated_from_issue.ref if us.generated_from_issue else None
+        ),
+        "generated_from_task": us.generated_from_task.ref
+        if us.generated_from_task
+        else None,
+        "from_task_ref": us.from_task_ref,
+        "external_reference": us.external_reference,
+        "tasks": ",".join([str(task.ref) for task in us.tasks.all()]),
+        "tags": ",".join(us.tags or []),
+        "watchers": us.watchers,
+        "voters": us.total_voters,
+        "due_date": us.due_date,
+        "due_date_reason": us.due_date_reason,
+        "epics": ",".join([str(epic.ref) for epic in us.epics.all()]),
+    }
+
+
+# Appends custom attribute values to an existing CSV row dict in-place.
+def _append_userstory_custom_attrs(row, us, custom_attrs):
+    for custom_attr in custom_attrs:
+        if not hasattr(us, "custom_attributes_values"):
+            continue
+        value = us.custom_attributes_values.attributes_values.get(
+            str(custom_attr.id), None
+        )
+        row[custom_attr.name] = text.sanitize_csv_text_value(value)
+
+
+def userstories_to_csv(project, queryset):
+    csv_data = io.StringIO()
+    fieldnames, roles, custom_attrs = _get_userstory_csv_fieldnames(project)
+
     queryset = queryset.prefetch_related(
         "role_points",
         "role_points__points",
@@ -608,74 +692,7 @@ def userstories_to_csv(project, queryset):
     writer = csv.DictWriter(csv_data, fieldnames=fieldnames)
     writer.writeheader()
     for us in queryset:
-        row = {
-            "id": us.id,
-            "ref": us.ref,
-            "subject": text.sanitize_csv_text_value(us.subject),
-            "description": text.sanitize_csv_text_value(us.description),
-            "sprint_id": us.milestone.id if us.milestone else None,
-            "sprint": (
-                text.sanitize_csv_text_value(us.milestone.name)
-                if us.milestone
-                else None
-            ),
-            "sprint_estimated_start": (
-                us.milestone.estimated_start if us.milestone else None
-            ),
-            "sprint_estimated_finish": (
-                us.milestone.estimated_finish if us.milestone else None
-            ),
-            "owner": us.owner.username if us.owner else None,
-            "owner_full_name": (
-                text.sanitize_csv_text_value(us.owner.get_full_name())
-                if us.owner
-                else None
-            ),
-            "assigned_to": us.assigned_to.username if us.assigned_to else None,
-            "assigned_to_full_name": (
-                text.sanitize_csv_text_value(us.assigned_to.get_full_name())
-                if us.assigned_to
-                else None
-            ),
-            "assigned_users": ",".join(
-                [assigned_user.username for assigned_user in us.assigned_users.all()]
-            ),
-            "assigned_users_full_name": text.sanitize_csv_text_value(
-                ",".join(
-                    [
-                        assigned_user.get_full_name()
-                        for assigned_user in us.assigned_users.all()
-                    ]
-                )
-            ),
-            "status": us.status.name if us.status else None,
-            "is_closed": us.is_closed,
-            "swimlane": us.swimlane.name if us.swimlane else None,
-            "backlog_order": us.backlog_order,
-            "sprint_order": us.sprint_order,
-            "kanban_order": us.kanban_order,
-            "created_date": us.created_date,
-            "modified_date": us.modified_date,
-            "finish_date": us.finish_date,
-            "client_requirement": us.client_requirement,
-            "team_requirement": us.team_requirement,
-            "attachments": us.attachments.count(),
-            "generated_from_issue": (
-                us.generated_from_issue.ref if us.generated_from_issue else None
-            ),
-            "generated_from_task": (
-                us.generated_from_task.ref if us.generated_from_task else None
-            ),
-            "from_task_ref": us.from_task_ref,
-            "external_reference": us.external_reference,
-            "tasks": ",".join([str(task.ref) for task in us.tasks.all()]),
-            "tags": ",".join(us.tags or []),
-            "watchers": us.watchers,
-            "voters": us.total_voters,
-            "due_date": us.due_date,
-            "due_date_reason": us.due_date_reason,
-            "epics": ",".join([str(epic.ref) for epic in us.epics.all()]),
-        }
+        row = _userstory_to_csv_row(us)
 
         us_role_points_by_role_id = {
             us_rp.role.id: us_rp.points.value for us_rp in us.role_points.all()
@@ -687,13 +704,7 @@ def userstories_to_csv(project, queryset):
 
         row["total-points"] = us.get_total_points()
 
-        for custom_attr in custom_attrs:
-            if not hasattr(us, "custom_attributes_values"):
-                continue
-            value = us.custom_attributes_values.attributes_values.get(
-                str(custom_attr.id), None
-            )
-            row[custom_attr.name] = text.sanitize_csv_text_value(value)
+        _append_userstory_custom_attrs(row, us, custom_attrs)
 
         writer.writerow(row)
 
@@ -704,15 +715,25 @@ def userstories_to_csv(project, queryset):
 # Api filter data
 #####################################################
 
-
-def _get_userstories_statuses(project, queryset):
+# Returns the SQL WHERE clause and parameters for a given queryset
+def _get_queryset_where_data(queryset):
     compiler = connection.ops.compiler(queryset.query.compiler)(
         queryset.query, connection, None
     )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
+    where, where_params = queryset.query.where.as_sql(compiler, connection)
+    return where, where_params
 
+# Executes a raw SQL query for userstories filtering using the given SQL template and a function to build parameters
+def _execute_userstories_filter_query(queryset, sql_template, params_builder):
+    where, where_params = _get_queryset_where_data(queryset)
+    sql = sql_template.format(where=where)
+    sql_params = params_builder(where_params)
+
+    with closing(connection.cursor()) as cursor:
+        cursor.execute(sql, sql_params)
+        return cursor.fetchall()
+
+def _get_userstories_statuses(project, queryset):
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."status_id" "status_id",
@@ -743,13 +764,13 @@ def _get_userstories_statuses(project, queryset):
                      ON "counters"."status_id" = "projects_userstorystatus"."id"
                   WHERE "projects_userstorystatus"."project_id" = %s
                ORDER BY "projects_userstorystatus"."order";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, name, color, order, count in rows:
@@ -766,13 +787,6 @@ def _get_userstories_statuses(project, queryset):
 
 
 def _get_userstories_assigned_to(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."assigned_to_id" "assigned_to_id",
@@ -825,13 +839,13 @@ def _get_userstories_assigned_to(project, queryset):
                       ON "userstories_userstory"."id" = "userstories_userstory_assigned_users"."userstory_id"
                   WHERE {where} AND "userstories_userstory"."assigned_to_id" IS NULL
                GROUP BY "assigned_to_id"
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id] + where_params)
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id] + where_params,
+    )
 
     result = []
     none_valued_added = False
@@ -861,13 +875,6 @@ def _get_userstories_assigned_to(project, queryset):
 
 
 def _get_userstories_assigned_users(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT COALESCE("userstories_userstory_assigned_users"."user_id",
@@ -927,13 +934,13 @@ def _get_userstories_assigned_users(project, queryset):
                       WHERE "userstories_userstory_assigned_users"."userstory_id" = "userstories_userstory"."id"
                   ) AND "userstories_userstory"."assigned_to_id" IS NULL
                GROUP BY "username";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id] + where_params)
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id] + where_params,
+    )
 
     result = []
     none_valued_added = False
@@ -969,13 +976,6 @@ def _get_userstories_assigned_users(project, queryset):
 
 
 def _get_userstories_owners(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS(
          SELECT DISTINCT "userstories_userstory"."owner_id" "owner_id",
@@ -1025,13 +1025,13 @@ def _get_userstories_owners(project, queryset):
         LEFT OUTER JOIN "counters"
                      ON ("users_user"."id" = "counters"."owner_id")
                   WHERE ("users_user"."is_system" IS TRUE)
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, full_name, username, count, photo, email in rows:
@@ -1050,13 +1050,6 @@ def _get_userstories_owners(project, queryset):
 
 
 def _get_userstories_tags(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
            WITH "userstories_tags" AS (
                    SELECT "tag",
@@ -1089,13 +1082,13 @@ def _get_userstories_tags(project, queryset):
 LEFT OUTER JOIN "userstories_tags"
              ON "project_tags"."tag_color"[1] = "userstories_tags"."tag"
        ORDER BY "tag"
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for name, color, count in rows:
@@ -1110,12 +1103,6 @@ LEFT OUTER JOIN "userstories_tags"
 
 
 def _get_userstories_epics(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
     extra_sql = """
        WITH "counters" AS (
                SELECT "epics_relateduserstory"."epic_id" AS "epic_id",
@@ -1162,13 +1149,13 @@ def _get_userstories_epics(project, queryset):
       LEFT OUTER JOIN "counters"
                    ON ("counters"."epic_id" = "epics_epic"."id")
                 WHERE "epics_epic"."project_id" = %s
-        """.format(
-        where=where
-    )
+        """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + where_params + [project.id],
+    )
 
     result = []
     for id, ref, subject, order, count in rows:
@@ -1200,13 +1187,6 @@ def _get_userstories_epics(project, queryset):
 
 
 def _get_userstories_roles(project, queryset):
-    compiler = connection.ops.compiler(queryset.query.compiler)(
-        queryset.query, connection, None
-    )
-    queryset_where_tuple = queryset.query.where.as_sql(compiler, connection)
-    where = queryset_where_tuple[0]
-    where_params = queryset_where_tuple[1]
-
     extra_sql = """
      WITH "us_counters" AS (
          SELECT DISTINCT "userstories_userstory"."status_id" "status_id",
@@ -1242,13 +1222,13 @@ def _get_userstories_roles(project, queryset):
                      ON "counters"."role_id" = "users_role"."id"
                   WHERE "users_role"."project_id" = %s
                ORDER BY "users_role"."order";
-    """.format(
-        where=where
-    )
+    """
 
-    with closing(connection.cursor()) as cursor:
-        cursor.execute(extra_sql, where_params + [project.id])
-        rows = cursor.fetchall()
+    rows = _execute_userstories_filter_query(
+        queryset,
+        extra_sql,
+        lambda where_params: where_params + [project.id],
+    )
 
     result = []
     for id, name, order, count in rows:

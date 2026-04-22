@@ -30,11 +30,16 @@
 #   SOFTWARE.
 
 from calendar import timegm
-from datetime import datetime
+from datetime import datetime, timezone
 
 from django.conf import settings
 from django.utils.functional import lazy
-from django.utils.timezone import is_naive, make_aware, utc
+from django.utils.timezone import is_naive, make_aware
+
+try:
+    from django.utils.timezone import utc
+except ImportError:
+    utc = timezone.utc
 
 
 def make_utc(dt):
